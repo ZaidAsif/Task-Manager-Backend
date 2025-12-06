@@ -9,7 +9,6 @@ import {
 import { verification } from "../utils/authentication.js";
 import upload from "../utils/multer.js";
 const router = express.Router();
-// user
 router.post("/register", registerController);
 router.post("/login", loginController);
 router.get("/profile", verification, userProfile);

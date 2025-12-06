@@ -108,6 +108,10 @@ export const updateProfile = async (req, res) => {
     if (req.body.password) {
       user.password = await bcrypt.hash(req.body.password, 10);
     }
+    console.log("req body pfp", req.body.profileImage);
+    if (req.body.profileImage) {  
+      user.profileImage = req.body.profileImage;
+    }
     const updatedProfile = await user.save();
     user.password = undefined;
     return res.status(200).json({

@@ -1,129 +1,170 @@
-import Task from "../models/task.model.js"
-import excelJs from "exceljs"
-import User from "../models/user.model.js"
-import { errorHandler } from "../utils/error.js"
+import Task from "../models/task.model.js";
+import User from "../models/user.model.js";
+import excelJs from "exceljs";
+import { errorHandler } from "../utils/error.js";
 
+/**
+ * 📊 EXPORT TASK REPORT
+ * Generates Excel of all tasks with assignees & metadata
+ */
 export const exportTaskReport = async (req, res, next) => {
   try {
-    const tasks = await Task.find().populate("assignedTo", "name email")
+    const tasks = await Task.find()
+      .populate("assignedTo", "name email")
+      .lean();
 
-    const workbook = new excelJs.Workbook()
-    const worksheet = workbook.addWorksheet("Tasks Report")
+    const workbook = new excelJs.Workbook();
+    const worksheet = workbook.addWorksheet("Tasks Report");
 
     worksheet.columns = [
-      { header: "Task Id", key: "_id", width: 25 },
+      { header: "Task ID", key: "_id", width: 25 },
       { header: "Title", key: "title", width: 30 },
       { header: "Description", key: "description", width: 50 },
       { header: "Priority", key: "priority", width: 15 },
       { header: "Status", key: "status", width: 20 },
       { header: "Due Date", key: "dueDate", width: 20 },
-      { header: "Assigned To", key: "assignedTo", width: 30 },
-    ]
+      { header: "Assigned To", key: "assignedTo", width: 35 },
+    ];
 
+    // Add rows
     tasks.forEach((task) => {
-      const assignedTo = task.assignedTo
-        .map((user) => `${user.name} (${user.email})`)
-        .join(", ")
+      const assignedUsers = Array.isArray(task.assignedTo)
+        ? task.assignedTo.map((u) => `${u.name} (${u.email})`).join(", ")
+        : task.assignedTo?.name
+        ? `${task.assignedTo.name} (${task.assignedTo.email})`
+        : "Unassigned";
 
       worksheet.addRow({
-        _id: task.id,
+        _id: task._id.toString(),
         title: task.title,
-        description: task.description,
-        priority: task.priority,
-        status: task.status,
-        dueDate: task.dueDate.toISOString().split("T")[0],
-        assignedTo: assignedTo || "Unassigned",
-      })
-    })
+        description: task.description || "-",
+        priority: task.priority || "Normal",
+        status: task.status || "Pending",
+        dueDate: task.dueDate
+          ? new Date(task.dueDate).toISOString().split("T")[0]
+          : "-",
+        assignedTo: assignedUsers,
+      });
+    });
 
+    // Style header row
+    worksheet.getRow(1).eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF556B2F" },
+      };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+
+    // Headers
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     res.setHeader(
       "Content-Type",
-      "attachment/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="tasks_report.xlsx"'
-    )
+      `attachment; filename="tasks_report_${timestamp}.xlsx"`
+    );
 
-    return workbook.xlsx.write(res).then(() => {
-      res.end()
-    })
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (error) {
-    console.log(error.message);
-     return next(errorHandler(500,error.message))
+    console.error("Export Task Report Error:", error.message);
+    return next(errorHandler(500, "Failed to generate task report"));
   }
-}
+};
 
+/**
+ * 👥 EXPORT USER REPORT
+ * Generates Excel of users with task counts & statuses
+ */
 export const exportUsersReport = async (req, res, next) => {
   try {
-    const users = await User.find().select("name email _id").lean()
+    const users = await User.find().select("name email _id").lean();
+    const tasks = await Task.find().populate("assignedTo", "_id").lean();
 
-    const userTasks = await Task.find().populate("assignedTo", "name email _id")
+    const userStats = {};
 
-    const userTaskMap = {}
+    // Initialize map
+    users.forEach((u) => {
+      userStats[u._id] = {
+        name: u.name,
+        email: u.email,
+        totalTasks: 0,
+        pending: 0,
+        inProgress: 0,
+        completed: 0,
+      };
+    });
 
-    users.forEach((user) => {
-      userTaskMap[user._id] = {
-        name: user.name,
-        email: user.email,
-        taskCount: 0,
-        pendingTasks: 0,
-        inProgressTasks: 0,
-        completedTasks: 0,
-      }
-    })
+    // Aggregate task data
+    tasks.forEach((t) => {
+      if (!t.assignedTo) return;
+      const assignedUsers = Array.isArray(t.assignedTo)
+        ? t.assignedTo
+        : [t.assignedTo];
+      assignedUsers.forEach((u) => {
+        if (userStats[u._id]) {
+          userStats[u._id].totalTasks++;
+          if (t.status === "Pending") userStats[u._id].pending++;
+          else if (t.status === "In Progress") userStats[u._id].inProgress++;
+          else if (t.status === "Completed") userStats[u._id].completed++;
+        }
+      });
+    });
 
-    userTasks.forEach((task) => {
-      if (task.assignedTo) {
-        task.assignedTo.forEach((assignedUser) => {
-          if (userTaskMap[assignedUser._id]) {
-            userTaskMap[assignedUser._id].taskCount += 1
-
-            if (task.status === "Pending") {
-              userTaskMap[assignedUser._id].pendingTasks += 1
-            } else if (task.status === "In Progress") {
-              userTaskMap[assignedUser._id].inProgressTasks += 1
-            } else if (task.status === "Completed") {
-              userTaskMap[assignedUser._id].completedTasks += 1
-            }
-          }
-        })
-      }
-    })
-
-    const workbook = new excelJs.Workbook()
-
-    const worksheet = workbook.addWorksheet("User Task Report")
+    // Create Excel
+    const workbook = new excelJs.Workbook();
+    const worksheet = workbook.addWorksheet("User Task Report");
 
     worksheet.columns = [
-      { header: "User Name", key: "name", width: 30 },
-      { header: "Email", key: "email", width: 40 },
-      { header: "Total Assigned Tasks", key: "taskCount", width: 20 },
-      { header: "Pending Tasks", key: "pendingTasks", width: 20 },
-      { header: "In Progress Tasks", key: "inProgressTasks", width: 20 }, 
-      { header: "Completed Tasks", key: "completedTasks", width: 20 },
-    ]
+      { header: "User Name", key: "name", width: 25 },
+      { header: "Email", key: "email", width: 35 },
+      { header: "Total Tasks", key: "totalTasks", width: 15 },
+      { header: "Pending", key: "pending", width: 15 },
+      { header: "In Progress", key: "inProgress", width: 15 },
+      { header: "Completed", key: "completed", width: 15 },
+      { header: "Completion Rate (%)", key: "completionRate", width: 20 },
+    ];
 
-    Object.values(userTaskMap).forEach((user) => {
-      worksheet.addRow(user)
-    })
+    // Add rows
+    Object.values(userStats).forEach((u) => {
+      const completionRate =
+        u.totalTasks === 0
+          ? "0%"
+          : ((u.completed / u.totalTasks) * 100).toFixed(1) + "%";
+      worksheet.addRow({ ...u, completionRate });
+    });
 
+    // Header styling
+    worksheet.getRow(1).eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF556B2F" },
+      };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+
+    // Headers
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     res.setHeader(
       "Content-Type",
-      "attachment/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="users_report.xlsx"'
-    )
+      `attachment; filename="users_report_${timestamp}.xlsx"`
+    );
 
-    return workbook.xlsx.write(res).then(() => {
-      res.end()
-    })
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (error) {
-     console.log(error.message);
-     return next(errorHandler(500,error.message))
+    console.error("Export User Report Error:", error.message);
+    return next(errorHandler(500, "Failed to generate users report"));
   }
-}
+};
